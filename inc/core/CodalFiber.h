@@ -78,6 +78,11 @@ namespace codal
         #endif
     };
 
+    enum FiberLockMode {
+      MUTEX = 0,
+      SEMAPHORE = 1
+    };
+
     extern Fiber *currentFiber;
 
     /**
@@ -358,22 +363,20 @@ namespace codal
     class FiberLock
     {
         private:
-        int     locked;
-        Fiber   *queue;
+        int           locked;
+        int           resetTo;
+        FiberLockMode mode;
+        Fiber         *queue;
 
         public:
 
         /**
          * Create a new lock that can be used for mutual exclusion and condition synchronisation.
-         */
-        FiberLock();
-
-        /**
-         * Create a new semaphore-mode lock that can be used for mutual exclusion and condition synchronisation.
          * 
          * @param initial The number of access requests to grant before blocking
+         * @param mode The mode to operate in - either FiberLockMode::MUTEX or FiberLockMode::SEMAPHORE
          */
-        FiberLock( int initial );
+        FiberLock( int initial = 1, FiberLockMode mode = FiberLockMode::MUTEX );
 
         /**
          * Block the calling fiber until the lock is available
@@ -387,10 +390,8 @@ namespace codal
 
         /**
          * Release the lock, and signal to all waiting fibers to continue
-         * 
-         * @param reset The number of slots to reinitialise the FiberLock to, for semaphore duty
          */
-        void notifyAll( int reset = 0 );
+        void notifyAll();
 
         /**
          * Determine the number of fibers currently blocked on this lock

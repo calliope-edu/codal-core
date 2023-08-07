@@ -30,11 +30,11 @@ DEALINGS IN THE SOFTWARE.
 #include "LevelDetectorSPL.h"
 #include "ErrorNo.h"
 #include "StreamNormalizer.h"
-#include "CodalDmesg.h"
+#include "CodalAssert.h"
 
 using namespace codal;
 
-LevelDetectorSPL::LevelDetectorSPL(DataSource &source, float highThreshold, float lowThreshold, float gain, float minValue, uint16_t id, bool activateImmediately) : upstream(source)
+LevelDetectorSPL::LevelDetectorSPL(DataSource &source, float highThreshold, float lowThreshold, float gain, float minValue, uint16_t id, bool activateImmediately) : upstream(source), resourceLock(0)
 {
     this->id = id;
     this->level = 0;
@@ -59,17 +59,19 @@ LevelDetectorSPL::LevelDetectorSPL(DataSource &source, float highThreshold, floa
     this->inNoisyBlock = false;
     this->maxRms = 0;
 
+    this->bufferCount = 0;
     this->timeout = 0;
 }
 
 int LevelDetectorSPL::pullRequest()
 {
-    if( !activated && this->timeout - system_timer_current_time() > CODAL_STREAM_IDLE_TIMEOUT_MS ) {
+    // If we're not manually activated, not held active by a timeout, and we have no-one waiting on our data, bail.
+    if( !activated && !(system_timer_current_time() - this->timeout < CODAL_STREAM_IDLE_TIMEOUT_MS) && resourceLock.getWaitCount() == 0 ) {
+        this->bufferCount = 0;
         return DEVICE_BUSY;
     }
 
     ManagedBuffer b = upstream.pull();
-
     uint8_t *data = &b[0];
     
     int format = upstream.getFormat();
@@ -151,6 +153,13 @@ int LevelDetectorSPL::pullRequest()
         *   EMIT EVENTS
         ******************************/
 
+        if( this->bufferCount < LEVEL_DETECTOR_SPL_MIN_BUFFERS ) {
+            this->bufferCount++; // Here to prevent this endlessly increasing
+            return DEVICE_OK;
+        }
+        if( this->resourceLock.getWaitCount() > 0 )
+            this->resourceLock.notifyAll();
+
         // HIGH THRESHOLD
         if ((!(status & LEVEL_DETECTOR_SPL_HIGH_THRESHOLD_PASSED)) && level > highThreshold)
         {
@@ -208,10 +217,15 @@ int LevelDetectorSPL::pullRequest()
 
 float LevelDetectorSPL::getValue( int scale )
 {
-    if( !this->upstream.isConnected() ) {
+    if( !this->upstream.isConnected() )
         this->upstream.connect( *this );
-    }
-    this->timeout = system_timer_current_time() + CODAL_STREAM_IDLE_TIMEOUT_MS;
+
+    // Lock the resource, THEN bump the timout, so we get consistent on-time
+    if( this->bufferCount < LEVEL_DETECTOR_SPL_MIN_BUFFERS )
+        resourceLock.wait();
+
+    this->timeout = system_timer_current_time();
+
     return splToUnit( this->level, scale );
 }
 
