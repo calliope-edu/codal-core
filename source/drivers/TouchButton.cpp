@@ -29,7 +29,6 @@ DEALINGS IN THE SOFTWARE.
  */
 
 #include "CodalConfig.h"
-#include "CodalDmesg.h"
 #include "TouchButton.h"
 #include "Timer.h"
 #include "EventModel.h"

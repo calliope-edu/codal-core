@@ -63,7 +63,7 @@ using namespace codal;
 HeapDefinition heap[DEVICE_MAXIMUM_HEAPS] = { };
 uint8_t heap_count = 0;
 
-#if (CODAL_DEBUG > 0)
+#if (CODAL_DEBUG >= CODAL_DEBUG_HEAP)
 // Diplays a usage summary about a given heap...
 void device_heap_print(HeapDefinition &heap)
 {
