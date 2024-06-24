@@ -24,6 +24,7 @@ DEALINGS IN THE SOFTWARE.
 
 #include "StreamNormalizer.h"
 #include "ErrorNo.h"
+#include "CodalDmesg.h"
 
 using namespace codal;
 
@@ -275,7 +276,7 @@ int StreamNormalizer::setFormat(int format)
 }
 
 /**
- * Defines an optional gain to apply to the input, as afloating point multiple.
+ * Defines an optional gain to apply to the input, as a floating point multiple.
  *
  * @param gain The gain to apply to this input stream.
  * @return DEVICE_OK on success.
