@@ -49,6 +49,7 @@ DEALINGS IN THE SOFTWARE.
 
 
 #include "platform_includes.h"
+#include "codal_version.h"
 
 // Enables or disables the DeviceHeapllocator. Note that if disabled, no reuse of the SRAM normally
 // reserved for SoftDevice is possible, and out of memory condition will no longer be trapped...
@@ -190,12 +191,15 @@ DEALINGS IN THE SOFTWARE.
 #endif
 
 // Versioning options.
-// We use semantic versioning (http://semver.org/) to identify differnet versions of the codal device runtime.
-// Where possible we use yotta (an ARM mbed build tool) to help us track versions.
+// We use semantic versioning (http://semver.org/) to identify different versions of the codal device runtime.
 // if this isn't available, it can be defined manually as a configuration option.
 //
 #ifndef DEVICE_DAL_VERSION
-#define DEVICE_DAL_VERSION                    "unknown"
+  #ifdef CODAL_VERSION
+    #define DEVICE_DAL_VERSION                CODAL_VERSION
+  #else
+    #define DEVICE_DAL_VERSION                "unknown"
+  #endif
 #endif
 
 #ifndef DEVICE_USB
@@ -222,6 +226,15 @@ DEALINGS IN THE SOFTWARE.
 
 #ifndef CODAL_STREAM_IDLE_TIMEOUT_MS
   #define CODAL_STREAM_IDLE_TIMEOUT_MS   75
+#endif
+
+// During early CODAL development there was some misuse of `using namespace codal;` in header files.
+// Removing it from CODAL libs can cause targets to break unless they apply a large patch like:
+// https://github.com/lancaster-university/codal-microbit-v2/pull/437
+// This global namespace can be a problem when using CODAL together with other libraries/frameworks.
+// So we can use this flag to enable/disable whether to use the codal namespace globally or not.
+#ifndef CODAL_USE_GLOBAL_NAMESPACE
+  #define CODAL_USE_GLOBAL_NAMESPACE 1
 #endif
 
 //
