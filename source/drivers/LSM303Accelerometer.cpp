@@ -202,8 +202,8 @@ int LSM303Accelerometer::requestUpdate()
 
             // Scale into millig (approx) and align to ENU coordinate system
             sampleENU.x = -((int)(*y)) * sampleRange;
-            sampleENU.y = -((int)(*x)) * sampleRange;
-            sampleENU.z =  ((int)(*z)) * sampleRange;
+            sampleENU.y = ((int)(*x)) * sampleRange; //Inverted for Calliope mini3
+            sampleENU.z = -((int)(*z)) * sampleRange; //Inverted for Calliope mini3
 
             // indicate that new data is available.
             update();

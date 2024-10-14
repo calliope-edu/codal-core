@@ -176,8 +176,8 @@ int LSM303Magnetometer::requestUpdate()
 
             // Align to ENU coordinate system
             sampleENU.x = LSM303_M_NORMALIZE_SAMPLE(-((int)(*y)));
-            sampleENU.y = LSM303_M_NORMALIZE_SAMPLE(-((int)(*x)));
-            sampleENU.z = LSM303_M_NORMALIZE_SAMPLE(((int)(*z)));
+            sampleENU.y = LSM303_M_NORMALIZE_SAMPLE(((int)(*x))); //Inverted for Calliope mini3
+            sampleENU.z = LSM303_M_NORMALIZE_SAMPLE(-((int)(*z))); //Inverted for Calliope mini3
 
             // indicate that new data is available.
             update();
