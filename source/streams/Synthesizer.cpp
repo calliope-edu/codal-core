@@ -122,7 +122,7 @@ Synthesizer::Synthesizer(int sampleRate, bool isSigned) : output(*this)
  */
 void Synthesizer::idleCallback()
 {
-    if (bytesWritten && !synchronous && !active && output.canPull(bytesWritten))
+    if (bytesWritten && !synchronous && !active)
     {
         buffer.truncate(bytesWritten);
         output.pullRequest();
@@ -152,7 +152,7 @@ int Synthesizer::setFrequency(float frequency, int period, int envelopeStart, in
         return DEVICE_BUSY;
 
     // record our new intended frequency.
-    newPeriodNs = frequency == 0.0 ? 0 : (uint32_t) (1000000000.0f / frequency);
+    newPeriodNs = frequency == 0.0f ? 0 : (uint32_t) (1000000000.0f / frequency);
 
     if (period == 0)
     {

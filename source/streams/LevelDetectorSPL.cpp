@@ -34,7 +34,7 @@ DEALINGS IN THE SOFTWARE.
 
 using namespace codal;
 
-LevelDetectorSPL::LevelDetectorSPL(DataSource &source, float highThreshold, float lowThreshold, float gain, float minValue, uint16_t id, bool activateImmediately) : upstream(source), resourceLock(0)
+LevelDetectorSPL::LevelDetectorSPL(DataSource &source, float highThreshold, float lowThreshold, float gain, float minValue, uint16_t id) : upstream(source), resourceLock(0)
 {
     this->id = id;
     this->level = 0;
@@ -43,16 +43,9 @@ LevelDetectorSPL::LevelDetectorSPL(DataSource &source, float highThreshold, floa
     this->highThreshold = highThreshold;
     this->minValue = minValue;
     this->gain = gain;
-    this->status |= LEVEL_DETECTOR_SPL_INITIALISED;
+    this->status |= (LEVEL_DETECTOR_SPL_INITIALISED | LEVEL_DETECTOR_SPL_DATA_REQUESTED);
     this->unit = LEVEL_DETECTOR_SPL_DB;
-    enabled = true;
-    if(activateImmediately){
-        upstream.connect(*this);
-        this->activated = true;
-    }
-    else{
-        this->activated = false;
-    }
+    this->enabled = true;
 
     this->quietBlockCount = 0;
     this->noisyBlockCount = 0;
@@ -60,23 +53,67 @@ LevelDetectorSPL::LevelDetectorSPL(DataSource &source, float highThreshold, floa
     this->maxRms = 0;
 
     this->bufferCount = 0;
-    this->timeout = 0;
+    this->listenerCount = 0;
+
+    // Request a periodic callback
+    status |= DEVICE_COMPONENT_STATUS_SYSTEM_TICK;
+
+    source.connect(*this);
+}
+
+
+/**
+  * Periodic callback from Device system timer.
+  * Change the upstream active status accordingly.
+  */
+void LevelDetectorSPL::periodicCallback()
+{
+    // Ensure we don't timeout whilst waiting for data to stabilise.
+    if (this->bufferCount < LEVEL_DETECTOR_SPL_MIN_BUFFERS)
+    {
+        //DMESG("ALLOWING BUFFERS TO FILL...");
+        return;
+    }
+
+    // Calculate the time since the last request for data.
+    // If this is above the given threshold and our channel is active, request that the upstream generation of data be stopped.
+    if (status & LEVEL_DETECTOR_SPL_DATA_REQUESTED && !listenerCount && resourceLock.getWaitCount() == 0 && (system_timer->getTime() - this->timestamp >= LEVEL_DETECTOR_SPL_TIMEOUT))
+    {
+        //DMESG("LevelDetectorSPL: CALLBACK: DATA NO LONGER REQUIRED...");
+        this->status &= ~LEVEL_DETECTOR_SPL_DATA_REQUESTED;
+        upstream.dataWanted(DATASTREAM_NOT_WANTED);
+
+        // Set the buffercount to just below the threshold,such that any calling fibers will block
+        // until data is available, but we won't wait too long...
+        this->bufferCount = LEVEL_DETECTOR_SPL_MIN_BUFFERS;
+        this->status &= ~LEVEL_DETECTOR_SPL_DATA_VALID;
+    }
 }
 
 int LevelDetectorSPL::pullRequest()
 {
-    // If we're not manually activated, not held active by a timeout, and we have no-one waiting on our data, bail.
-    if( !activated && !(system_timer_current_time() - this->timeout < CODAL_STREAM_IDLE_TIMEOUT_MS) && resourceLock.getWaitCount() == 0 ) {
-        this->bufferCount = 0;
-        return DEVICE_BUSY;
+    //DMESG("LevelDetectorSPL: PR");
+
+    // Ignore the first LEVEL_DETECTOR_SPL_MIN_BUFFERS buffers, as we wait for the microphone to level out
+    if( this->bufferCount < LEVEL_DETECTOR_SPL_MIN_BUFFERS ) {
+        this->bufferCount++;
+        return DEVICE_OK;
+    }
+
+    // If we haven't requested data and there are no active listeners, there's nothing to do.
+    if (!(status & LEVEL_DETECTOR_SPL_DATA_REQUESTED || listenerCount))
+    {
+        //DMESG("LevelDetectorSPL: PR: ignoring data");
+        return DEVICE_OK;
     }
 
     ManagedBuffer b = upstream.pull();
     uint8_t *data = &b[0];
-    
+
     int format = upstream.getFormat();
     int skip = 1;
     float multiplier = 256;
+    bool nonzero = false;
     windowSize = 256;
 
     if (format == DATASTREAM_FORMAT_16BIT_SIGNED || format == DATASTREAM_FORMAT_UNKNOWN){
@@ -110,13 +147,66 @@ int LevelDetectorSPL::pullRequest()
         int16_t maxVal = 0;
         int16_t minVal = 32766;
         int32_t v;
+        bool ignore;
+
+        struct Outlier
+        {
+            int32_t value;
+            bool    used;
+        };
+
+        Outlier outliers[LEVEL_DETECTOR_SPL_OUTLIER_REJECTION] = {0, false};
+
         ptr = data;
         while (ptr < end) {
             v = (int32_t) StreamNormalizer::readSample[format](ptr);
-            if (v > maxVal) maxVal = v;
-            if (v < minVal) minVal = v;
+            if (v != 0) nonzero = true;
+
+            for (int i=0; i<LEVEL_DETECTOR_SPL_OUTLIER_REJECTION; i++)
+                if(!outliers[i].used || (outliers[i].used && v < outliers[i].value))
+                {
+                    for (int j=i+1; j<LEVEL_DETECTOR_SPL_OUTLIER_REJECTION; j++)
+                    {
+                        outliers[j].value = outliers[j-1].value;
+                        outliers[i+1].used = true;
+                    }
+
+                    outliers[i].value = v;
+                    outliers[i].used = true;
+                    break;
+                }
+
             ptr += skip;
         }
+
+        ptr = data;
+
+        while (ptr < end) {
+            v = (int32_t) StreamNormalizer::readSample[format](ptr);
+            ignore = false;
+
+            for (int i=0; i<LEVEL_DETECTOR_SPL_OUTLIER_REJECTION; i++)
+            {
+                if (v == outliers[i].value && outliers[i].used)
+                {
+                    outliers[i].used = false;
+                    ignore = true;
+                    break;
+                }
+            }
+
+            if (!ignore)
+            {
+                if (v > maxVal) maxVal = v;
+                if (v < minVal) minVal = v;
+            }
+
+            ptr += skip;
+        }
+
+        if (maxVal < minVal + LEVEL_DETECTOR_SPL_NOISE_FLOOR)
+            maxVal = minVal + 1;
+
         maxVal = (maxVal - minVal) / 2;
 
         /*******************************
@@ -128,16 +218,19 @@ int LevelDetectorSPL::pullRequest()
         while (ptr < end) {
             count++;
             v = (int32_t) StreamNormalizer::readSample[format](ptr) - minVal;   // need to sub minVal to avoid overflow
+            v = max(v - LEVEL_DETECTOR_SPL_NOISE_FLOOR, 0);
+
             sumSquares += v * v;
             ptr += skip;
         }
-        float rms = sqrt(sumSquares / count);
+
+        float rms = sqrtf(sumSquares / count);
 
         /*******************************
         *   CALCULATE SPL
         ******************************/
         float conv = ((float) maxVal * multiplier) / ((1 << 15) - 1) * gain;
-        conv = 20 * log10(conv / pref);
+        conv = 20.0f * log10f(conv / pref);
 
         if (conv < minValue)
             level = minValue;
@@ -149,16 +242,12 @@ int LevelDetectorSPL::pullRequest()
         samples -= windowSize;
         data += windowSize;
 
+        // Indicate that we have valid data.
+        this->status |= LEVEL_DETECTOR_SPL_DATA_VALID;
+
         /*******************************
         *   EMIT EVENTS
         ******************************/
-
-        if( this->bufferCount < LEVEL_DETECTOR_SPL_MIN_BUFFERS ) {
-            this->bufferCount++; // Here to prevent this endlessly increasing
-            return DEVICE_OK;
-        }
-        if( this->resourceLock.getWaitCount() > 0 )
-            this->resourceLock.notifyAll();
 
         // HIGH THRESHOLD
         if ((!(status & LEVEL_DETECTOR_SPL_HIGH_THRESHOLD_PASSED)) && level > highThreshold)
@@ -212,35 +301,43 @@ int LevelDetectorSPL::pullRequest()
         }
     }
 
+    // Wake any sleeping fibers waiting for data.
+    if(this->resourceLock.getWaitCount() > 0 && nonzero)
+        this->resourceLock.notifyAll();
+
+    // If we're waiting for valid data, esure we don't timeout early.
+    if(!nonzero && (status & LEVEL_DETECTOR_SPL_DATA_REQUESTED))
+        this->timestamp = system_timer->getTime();
+
     return DEVICE_OK;
 }
 
 float LevelDetectorSPL::getValue( int scale )
 {
-    if( !this->upstream.isConnected() )
-        this->upstream.connect( *this );
+    // Update out timestamp.
+    this->timestamp = system_timer->getTime();
 
-    // Lock the resource, THEN bump the timout, so we get consistent on-time
-    if( this->bufferCount < LEVEL_DETECTOR_SPL_MIN_BUFFERS )
+    if (!(status & LEVEL_DETECTOR_SPL_DATA_REQUESTED))
+    {
+        // We've just been asked for data after a (potentially) long wait.
+        // Let our upstream components know that we're interested in data again.
+        //DMESG("LevelDetectorSPL: getValue: dataWanted(1)");
+        status |= LEVEL_DETECTOR_SPL_DATA_REQUESTED;
+        upstream.dataWanted(DATASTREAM_WANTED);
+    }
+
+    // Wait for valid data to arrive before continuing.
+    if(((this->status & LEVEL_DETECTOR_SPL_DATA_VALID) == 0) || splToUnit(this->level, scale) == 0)
         resourceLock.wait();
 
-    this->timeout = system_timer_current_time();
+    this->timestamp = system_timer->getTime();
 
     return splToUnit( this->level, scale );
-}
-
-void LevelDetectorSPL::activateForEvents( bool state )
-{
-    this->activated = state;
-    if( this->activated && !this->upstream.isConnected() ) {
-        this->upstream.connect( *this );
-    }
 }
 
 void LevelDetectorSPL::disable(){
     enabled = false;
 }
-
 
 int LevelDetectorSPL::setLowThreshold(float value)
 {
@@ -327,17 +424,22 @@ float LevelDetectorSPL::splToUnit(float level, int queryUnit)
 {
     queryUnit = queryUnit == -1 ? unit : queryUnit;
 
+    float level8Bit = (level - (float)(LEVEL_DETECTOR_SPL_8BIT_000_POINT)) * LEVEL_DETECTOR_SPL_8BIT_CONVERSION;
+
+    // Ensure the result is clamped into the expected range.
+    if (level8Bit < 0.0f)
+        level8Bit = 0.0f;
+
+    if (level8Bit > 255.0f)
+        level8Bit = 255.0f;
+
     if (queryUnit == LEVEL_DETECTOR_SPL_8BIT)
-    {
-        level = (level - LEVEL_DETECTOR_SPL_8BIT_000_POINT) * LEVEL_DETECTOR_SPL_8BIT_CONVERSION;
+        return level8Bit;
 
-        // Ensure the result is clamped into the expected range.
-        if (level < 0.0f)
-            level = 0.0f;
-
-        if (level > 255.0f)
-            level = 255.0f;
-    }
+    // We have been asked to provide dB. Smooth out the values in the 9..21 range.
+    // We do this to balance the noise gate previously applied to eleminate noisy outlier samples.
+    if (level8Bit >= 9 && level8Bit <= 21)
+        level = 38 + ((level8Bit - 9.0f) * 1.5f);
 
     return level;
 }
@@ -348,10 +450,22 @@ float LevelDetectorSPL::unitToSpl(float level, int queryUnit)
     queryUnit = queryUnit == -1 ? unit : queryUnit;
 
     if (unit == LEVEL_DETECTOR_SPL_8BIT)
-        level = LEVEL_DETECTOR_SPL_8BIT_000_POINT + level / LEVEL_DETECTOR_SPL_8BIT_CONVERSION;
+        level = (float)(LEVEL_DETECTOR_SPL_8BIT_000_POINT) + level / LEVEL_DETECTOR_SPL_8BIT_CONVERSION;
 
     return level;
 }
+
+void LevelDetectorSPL::listenerAdded()
+{
+    this->listenerCount++;
+    this->getValue();
+}
+
+void LevelDetectorSPL::listenerRemoved()
+{
+    this->listenerCount--;
+}
+
 
 LevelDetectorSPL::~LevelDetectorSPL()
 {
