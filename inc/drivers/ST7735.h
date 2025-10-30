@@ -29,6 +29,7 @@ DEALINGS IN THE SOFTWARE.
 #include "SPI.h"
 #include "Event.h"
 #include "ScreenIO.h"
+#include "CodalFiber.h"
 
 namespace codal
 {
@@ -52,6 +53,7 @@ protected:
     uint8_t cmdBuf[20];
     ST7735WorkBuffer *work;
     bool inSleepMode;
+    FiberLock inProgressLock;
 
     // if true, every pixel will be plotted as 4 pixels and 16 bit color mode
     // will be used; this is for ILI9341 which usually has 320x240 screens
@@ -65,12 +67,12 @@ protected:
 
     void sendCmd(uint8_t *buf, int len);
     void sendCmdSeq(const uint8_t *buf);
-    void sendDone(Event);
     void sendWords(unsigned numBytes);
     void startTransfer(unsigned size);
     void sendBytes(unsigned num);
     void startRAMWR(int cmd = 0);
 
+    static void sendDone(ST7735* st);
     static void sendColorsStep(ST7735 *st);
 
 public:
